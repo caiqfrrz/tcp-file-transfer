@@ -6,33 +6,83 @@ Client::Client()
     serverAddress.sin_port = serverPort;
     serverAddress.sin_addr.s_addr = INADDR_ANY;
 
-    createSocket();
-    connectServer();
-    sendData();
+    if (!createSocket() || !connectServer())
+        return;
 
-    close(clientSocket);
+    requestAndSaveFile();
 }
 
-void Client::createSocket()
+Client::~Client()
+{
+    if (clientSocket != -1)
+        close(clientSocket);
+}
+
+bool Client::createSocket()
 {
     clientSocket = socket(AF_INET, SOCK_STREAM, 0);
+    if (clientSocket < 0)
+    {
+        std::cerr << "Socket creation failed: " << std::endl;
+        return false;
+    }
+    return true;
 }
 
-void Client::connectServer()
+bool Client::connectServer()
 {
-    connect(clientSocket, (struct sockaddr *)&serverAddress, sizeof(serverAddress));
+    if (connect(clientSocket, (struct sockaddr *)&serverAddress, sizeof(serverAddress)) < 0)
+    {
+        std::cerr << "Fail connecting to server" << std::endl;
+        return false;
+    }
     std::cout << "Connected to server" << std::endl;
+    return true;
 }
 
-void Client::sendData()
+void Client::requestAndSaveFile()
 {
-    char message[1024];
+    std::string fileName;
 
-    std::cout << "Enter your message: ";
-    std::cin.getline(message, sizeof(message));
-    std::cout << "Message sent: " << message << std::endl;
+    while (true)
+    {
+        std::cout << "Enter file name (or 'q' to quit): ";
+        std::getline(std::cin, fileName);
 
-    send(clientSocket, message, strlen(message), 0);
+        for (char &c : fileName)
+        {
+            c = tolower(static_cast<unsigned char>(c));
+        }
+
+        if (fileName == "q")
+        {
+            break;
+        }
+
+        send(clientSocket, fileName.c_str(), fileName.size(), 0);
+
+        std::ofstream file("received_" + fileName, std::ios::binary);
+        if (!file)
+        {
+            std::cout << "Failed to open file." << std::endl;
+            return;
+        }
+
+        char buffer[4096];
+        u_int32_t bytesReceived = 0;
+        std::cout << "Writing file to received_" << fileName << std::endl;
+
+        while (bytesReceived = recv(clientSocket, buffer, sizeof(buffer), 0))
+        {
+            file.write(buffer, bytesReceived);
+
+            if (bytesReceived < sizeof(buffer))
+                break;
+        }
+
+        file.close();
+        std::cout << "File received" << std::endl;
+    }
 }
 
 int main()

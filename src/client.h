@@ -4,18 +4,19 @@
 #include <unistd.h>
 #include <iostream>
 #include <string.h>
+#include <fstream>
 
 class Client
 {
 private:
     int clientSocket;
-    int serverSocket;
     sockaddr_in serverAddress;
     const int serverPort = htons(8000);
 
 public:
     Client();
-    void createSocket();
-    void connectServer();
-    void sendData();
+    ~Client();
+    bool createSocket();
+    bool connectServer();
+    void requestAndSaveFile();
 };
