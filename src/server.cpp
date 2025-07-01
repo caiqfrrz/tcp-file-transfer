@@ -1,6 +1,31 @@
 #include "server.h"
 
-Server::Server()
+enum req_type
+{
+    file,
+    message,
+    quit,
+    null
+};
+
+req_type getRequestType(const std::string &input)
+{
+    size_t space_pos = input.find(' ');
+    if (space_pos != std::string::npos)
+    {
+        std::string req = input.substr(0, space_pos);
+
+        if (req == "file")
+            return file;
+        if (req == "message")
+            return message;
+        if (req == "q" || req == "quit")
+            return quit;
+    }
+    return null;
+}
+
+Server::Server() : running(true)
 {
     serverAddress.sin_family = AF_INET;
     serverAddress.sin_port = htons(PORT);
@@ -10,29 +35,29 @@ Server::Server()
     {
         return;
     }
-    while (true)
+    while (running)
     {
-        if (!acceptClientConnection())
+        int cs = acceptClientConnection();
+        if (cs < 0)
         {
             continue;
         }
-
-        if (!receiveData())
-        {
-            std::cerr << "Error handling client request" << std::endl;
-        }
-
-        close(clientSocket);
-        clientSocket = -1;
+        std::thread([this, clientSocket = cs] { // C++17 capture with initialization
+            this->handleInput(clientSocket);
+        })
+            .detach();
     }
 }
 
 Server::~Server()
 {
-    if (clientSocket != -1)
-        close(clientSocket);
     if (serverSocket != -1)
         close(serverSocket);
+}
+
+void Server::stop()
+{
+    this->running = false;
 }
 
 bool Server::createSocket()
@@ -67,24 +92,72 @@ bool Server::listenSocket()
     return true;
 }
 
-bool Server::acceptClientConnection()
+int Server::acceptClientConnection()
 {
-    clientSocket = accept(serverSocket, nullptr, nullptr);
+    sockaddr_in clientAddr;
+    socklen_t clientLen = sizeof(clientAddr);
+
+    int clientSocket = accept(serverSocket, (struct sockaddr *)&clientAddr, &clientLen);
     if (clientSocket < 0)
     {
         std::cerr << "Accept failed: " << std::endl;
-        return false;
+        return -1;
     }
     std::cout << "Accepted a connection from client" << std::endl;
-    return true;
+    return clientSocket;
 }
 
-bool Server::sendFile(std::string fileName)
+void Server::sendMenu(int clientSocket)
+{
+    std::string menu = "1. Download file\n2. Upload file\n3. List files\n4. Exit\n";
+    send(clientSocket, menu.c_str(), menu.size(), 0);
+}
+
+void Server::handleInput(int clientSocket)
+{
+    try
+    {
+        this->sendMenu(clientSocket);
+        while (true)
+        {
+            std::string req = receiveData(clientSocket);
+            if (req.empty())
+                break;
+
+            req_type type = getRequestType(req);
+
+            switch (type)
+            {
+            case file:
+            {
+                std::string filename = req.substr(5);
+                // TODO: trim whitespace
+                sendFile(filename, clientSocket);
+                break;
+            }
+            case message:
+                break;
+            case quit:
+                break;
+            default:
+                break;
+            }
+        }
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Client handling error: " << e.what() << std::endl;
+    }
+    close(clientSocket);
+}
+
+bool Server::sendFile(std::string fileName, int clientSocket)
 {
     std::ifstream file(fileName, std::ios::binary);
     if (!file)
     {
-        std::cout << "File " << fileName << " does not exist." << std::endl;
+        std::string err = "File " + fileName + " does not exist.\n";
+        send(clientSocket, err.c_str(), err.size(), 0);
         return false;
     }
 
@@ -115,20 +188,19 @@ bool Server::sendFile(std::string fileName)
     return true;
 }
 
-bool Server::receiveData()
+std::string Server::receiveData(int clientSocket)
 {
     char buffer[1024] = {0};
     int bytesReceived = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
     if (bytesReceived <= 0)
     {
         std::cerr << "Receive failed" << std::endl;
-        return false;
+        return "";
     }
 
     buffer[bytesReceived] = '\0';
-    std::cout << "Requested: " << buffer << std::endl;
-    sendFile(buffer);
-    return true;
+    std::string str(buffer);
+    return str;
 }
 
 int main()

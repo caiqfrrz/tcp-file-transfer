@@ -3,13 +3,13 @@
 Client::Client()
 {
     serverAddress.sin_family = AF_INET;
-    serverAddress.sin_port = serverPort;
+    serverAddress.sin_port = htons(serverPort);
     serverAddress.sin_addr.s_addr = INADDR_ANY;
 
     if (!createSocket() || !connectServer())
         return;
 
-    requestAndSaveFile();
+    handleInteraction();
 }
 
 Client::~Client()
@@ -40,49 +40,75 @@ bool Client::connectServer()
     return true;
 }
 
-void Client::requestAndSaveFile()
+void Client::displayServerMenu()
 {
-    std::string fileName;
+    char buffer[1024];
+    int bytes = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
+    if (bytes > 0)
+    {
+        buffer[bytes] = '\0';
+        std::cout << "\nServer Menu:\n"
+                  << buffer << std::endl;
+    }
+}
+
+void Client::handleInteraction()
+{
+    displayServerMenu();
 
     while (true)
     {
-        std::cout << "Enter file name (or 'q' to quit): ";
-        std::getline(std::cin, fileName);
+        std::string input;
+        std::cout << "Enter command (file <filename>, message <text>, quit): ";
+        std::getline(std::cin, input);
 
-        for (char &c : fileName)
+        // Send the raw command to server
+        if (send(clientSocket, input.c_str(), input.size(), 0) <= 0)
         {
-            c = tolower(static_cast<unsigned char>(c));
-        }
-
-        if (fileName == "q")
-        {
+            std::cerr << "Failed to send command" << std::endl;
             break;
         }
 
-        send(clientSocket, fileName.c_str(), fileName.size(), 0);
-
-        std::ofstream file("received_" + fileName, std::ios::binary);
-        if (!file)
+        // Handle different commands
+        if (input.rfind("quit", 0) == 0)
         {
-            std::cout << "Failed to open file." << std::endl;
-            return;
+            break;
         }
-
-        char buffer[4096];
-        u_int32_t bytesReceived = 0;
-        std::cout << "Writing file to received_" << fileName << std::endl;
-
-        while (bytesReceived = recv(clientSocket, buffer, sizeof(buffer), 0))
+        else if (input.rfind("file ", 0) == 0)
         {
-            file.write(buffer, bytesReceived);
-
-            if (bytesReceived < sizeof(buffer))
-                break;
+            handleFileDownload(input.substr(5)); // Extract filename
         }
-
-        file.close();
-        std::cout << "File received" << std::endl;
+        else if (input.rfind("message ", 0) == 0)
+        {
+            // Message handling can be added later
+            std::cout << "Message sent to server" << std::endl;
+        }
     }
+}
+
+void Client::handleFileDownload(std::string fileName)
+{
+    std::ofstream file("downloaded" + fileName, std::ios::binary);
+    if (!file)
+    {
+        std::cout << "Failed to open file." << std::endl;
+        return;
+    }
+
+    char buffer[4096];
+    u_int32_t bytesReceived = 0;
+    std::cout << "Writing file to received_" << fileName << std::endl;
+
+    while (bytesReceived = recv(clientSocket, buffer, sizeof(buffer), 0))
+    {
+        file.write(buffer, bytesReceived);
+
+        if (bytesReceived < sizeof(buffer))
+            break;
+    }
+
+    file.close();
+    std::cout << "File received" << std::endl;
 }
 
 int main()

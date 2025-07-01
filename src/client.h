@@ -11,12 +11,14 @@ class Client
 private:
     int clientSocket;
     sockaddr_in serverAddress;
-    const int serverPort = htons(8000);
+    const int serverPort = 8000;
 
 public:
     Client();
     ~Client();
+    void displayServerMenu();
+    void handleFileDownload(std::string fileName);
     bool createSocket();
     bool connectServer();
-    void requestAndSaveFile();
+    void handleInteraction();
 };
