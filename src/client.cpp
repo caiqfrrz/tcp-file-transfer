@@ -47,68 +47,114 @@ void Client::displayServerMenu()
     if (bytes > 0)
     {
         buffer[bytes] = '\0';
-        std::cout << "\nServer Menu:\n"
-                  << buffer << std::endl;
+        std::cout << buffer << std::endl;
     }
+}
+
+void Client::listenServer()
+{
+    while (true)
+    {
+        std::string line = receiveLine();
+        if (line.empty())
+        {
+            std::cerr << "Disconnected from server." << std::endl;
+            break;
+        }
+
+        if (line.rfind("MSG", 0) == 0)
+        {
+            std::cout << "\r";
+            std::cout << "                                         \r";
+            std::cout << line.substr(4) << std::endl;
+            std::cout << "Enter command (h for help): " << std::flush;
+        }
+        else if (line.rfind("FILE_START", 0) == 0)
+        {
+            handleFileDownload(line);
+        }
+    }
+
+    running = false;
+    close(clientSocket);
+}
+
+std::string Client::receiveLine()
+{
+    std::string line;
+    char ch;
+    while (recv(clientSocket, &ch, 1, 0) > 0)
+    {
+        if (ch == '\n')
+            break;
+        line += ch;
+    }
+    return line;
 }
 
 void Client::handleInteraction()
 {
     displayServerMenu();
+    std::thread([this]()
+                { this->listenServer(); })
+        .detach();
 
     while (true)
     {
         std::string input;
-        std::cout << "Enter command (file <filename>, message <text>, quit): ";
+        std::cout << "Enter command (h for help): ";
         std::getline(std::cin, input);
 
-        // Send the raw command to server
         if (send(clientSocket, input.c_str(), input.size(), 0) <= 0)
         {
             std::cerr << "Failed to send command" << std::endl;
             break;
         }
 
-        // Handle different commands
         if (input.rfind("quit", 0) == 0)
         {
             break;
         }
-        else if (input.rfind("file ", 0) == 0)
-        {
-            handleFileDownload(input.substr(5)); // Extract filename
-        }
-        else if (input.rfind("message ", 0) == 0)
-        {
-            // Message handling can be added later
-            std::cout << "Message sent to server" << std::endl;
-        }
     }
+
+    running = false;
+    close(clientSocket);
 }
 
-void Client::handleFileDownload(std::string fileName)
+void Client::handleFileDownload(std::string fileInfo)
 {
-    std::ofstream file("downloaded" + fileName, std::ios::binary);
+    // protocol: FILE_START filename size
+    std::istringstream iss(fileInfo);
+    std::string tag, filename;
+    int filesize;
+    iss >> tag >> filename >> filesize;
+
+    std::ofstream file("downloaded_" + filename, std::ios::binary);
     if (!file)
     {
-        std::cout << "Failed to open file." << std::endl;
+        std::cerr << "Could not create file." << std::endl;
         return;
     }
 
+    int remaining = filesize;
     char buffer[4096];
-    u_int32_t bytesReceived = 0;
-    std::cout << "Writing file to received_" << fileName << std::endl;
-
-    while (bytesReceived = recv(clientSocket, buffer, sizeof(buffer), 0))
+    while (remaining > 0)
     {
-        file.write(buffer, bytesReceived);
-
-        if (bytesReceived < sizeof(buffer))
+        int chunk = recv(clientSocket, buffer, std::min((int)sizeof(buffer), remaining), 0);
+        if (chunk <= 0)
+        {
+            std::cerr << "Connection lost during file transfer." << std::endl;
             break;
+        }
+        file.write(buffer, chunk);
+        remaining -= chunk;
     }
 
     file.close();
-    std::cout << "File received" << std::endl;
+    // read FILE_END
+    receiveLine();
+
+    std::cout << "File " << filename << " downloaded!" << std::endl;
 }
 
 int main()

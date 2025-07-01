@@ -5,6 +5,7 @@ enum req_type
     file,
     message,
     quit,
+    help,
     null
 };
 
@@ -21,6 +22,8 @@ req_type getRequestType(const std::string &input)
             return message;
         if (req == "q" || req == "quit")
             return quit;
+        if (req == "h" || req == "help")
+            return help;
     }
     return null;
 }
@@ -37,14 +40,29 @@ Server::Server() : running(true)
     }
     while (running)
     {
-        int cs = acceptClientConnection();
-        if (cs < 0)
+
+        ClientInfo ci = acceptClientConnection();
+        if (ci.socket < 0)
         {
             continue;
         }
-        std::thread([this, clientSocket = cs] { // C++17 capture with initialization
-            this->handleInput(clientSocket);
-        })
+
+        std::thread([this, clientSocket = ci.socket, clientAddr = ci.addr]
+                    {
+                        this->handleInput(clientSocket, clientAddr);
+
+                        {
+                            std::lock_guard<std::mutex> lock(lockVector);
+                            auto it = std::find_if(clients.begin(), clients.end(),
+                                [clientSocket](const ClientInfo& ci) {
+                                    return ci.socket == clientSocket;
+                                });
+
+                            if (it != clients.end())
+                            {
+                                clients.erase(it);
+                            }
+                        } })
             .detach();
     }
 }
@@ -68,6 +86,14 @@ bool Server::createSocket()
         std::cerr << "Socket creation failed: " << std::endl;
         return false;
     }
+
+    int opt = 1;
+    if (setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
+    {
+        std::cerr << "setsockopt(SO_REUSEADDR) failed.\n";
+        return false;
+    }
+
     return true;
 }
 
@@ -92,7 +118,7 @@ bool Server::listenSocket()
     return true;
 }
 
-int Server::acceptClientConnection()
+ClientInfo Server::acceptClientConnection()
 {
     sockaddr_in clientAddr;
     socklen_t clientLen = sizeof(clientAddr);
@@ -101,19 +127,32 @@ int Server::acceptClientConnection()
     if (clientSocket < 0)
     {
         std::cerr << "Accept failed: " << std::endl;
-        return -1;
+        return ClientInfo{-1, sockaddr_in{}};
     }
     std::cout << "Accepted a connection from client" << std::endl;
-    return clientSocket;
+
+    {
+        std::lock_guard<std::mutex> lock(lockVector);
+        clients.push_back(ClientInfo{clientSocket, clientAddr});
+    }
+
+    return ClientInfo{clientSocket, clientAddr};
 }
 
 void Server::sendMenu(int clientSocket)
 {
-    std::string menu = "1. Download file\n2. Upload file\n3. List files\n4. Exit\n";
+    const std::string menu =
+        R"(
+file <file-name>          -> download a file
+message <message-data>    -> send a message
+list                      -> list the files in the server
+help                      -> this screen
+q or quit                 -> quit
+)";
     send(clientSocket, menu.c_str(), menu.size(), 0);
 }
 
-void Server::handleInput(int clientSocket)
+void Server::handleInput(int clientSocket, sockaddr_in clientAddr)
 {
     try
     {
@@ -122,7 +161,10 @@ void Server::handleInput(int clientSocket)
         {
             std::string req = receiveData(clientSocket);
             if (req.empty())
+            {
+                std::cerr << "Connection closed by client.\n";
                 break;
+            }
 
             req_type type = getRequestType(req);
 
@@ -131,13 +173,26 @@ void Server::handleInput(int clientSocket)
             case file:
             {
                 std::string filename = req.substr(5);
-                // TODO: trim whitespace
                 sendFile(filename, clientSocket);
                 break;
             }
             case message:
+            {
+                std::string messageStr = req.substr(8);
+                std::string clientIp = inet_ntoa(clientAddr.sin_addr);
+                uint16_t clientPort = ntohs(clientAddr.sin_port);
+
+                std::string messageComplete = "MSG " + clientIp + " says: " + messageStr + "\n";
+
+                std::cout << "broadcasting " + messageComplete << std::endl;
+
+                broadcastMessage(messageComplete, clientSocket);
                 break;
+            }
             case quit:
+                break;
+            case help:
+                sendMenu(clientSocket);
                 break;
             default:
                 break;
@@ -156,36 +211,53 @@ bool Server::sendFile(std::string fileName, int clientSocket)
     std::ifstream file(fileName, std::ios::binary);
     if (!file)
     {
-        std::string err = "File " + fileName + " does not exist.\n";
+        std::string err = "MSG ERR: file not found.\n";
         send(clientSocket, err.c_str(), err.size(), 0);
         return false;
     }
 
-    std::cout << "Sending " << fileName << " to client:" << std::endl;
+    // CORREÇÃO AQUI
+    file.seekg(0, std::ios::end);
+    std::streamsize filesize = file.tellg();
+    file.seekg(0, std::ios::beg);
+
+    std::string header = "FILE_START " + fileName + " " + std::to_string(filesize) + "\n";
+    send(clientSocket, header.c_str(), header.size(), 0);
+
+    std::cout << "Sending " << fileName << " (" << filesize << " bytes) to client." << std::endl;
 
     char buffer[4096];
-    u_int32_t i = 0;
-    while (file.read(buffer, sizeof(buffer)))
+    while (filesize > 0)
     {
-        int bytesRead = file.gcount();
+        file.read(buffer, sizeof(buffer));
+        std::streamsize bytesRead = file.gcount();
+
         int bytesSent = send(clientSocket, buffer, bytesRead, 0);
         if (bytesSent != bytesRead)
         {
-            std::cerr << "Send failed" << std::endl;
+            std::cerr << "Send failed." << std::endl;
             file.close();
             return false;
         }
-        std::cout << "Sending chunk " << i++ << " to client" << std::endl;
+
+        filesize -= bytesRead;
     }
 
-    if (file.gcount() > 0)
-    {
-        send(clientSocket, buffer, file.gcount(), 0);
-    }
-
-    std::cout << "File " << fileName << " was successfully sent to client." << std::endl;
     file.close();
+    std::string endMarker = "FILE_END\n";
+    send(clientSocket, endMarker.c_str(), endMarker.size(), 0);
+
+    std::cout << "File " << fileName << " successfully sent to client." << std::endl;
     return true;
+}
+
+void Server::broadcastMessage(const std::string &message, int senderSocket)
+{
+    std::lock_guard<std::mutex> lock(lockVector);
+    for (ClientInfo client : clients)
+    {
+        send(client.socket, message.c_str(), message.size(), 0);
+    }
 }
 
 std::string Server::receiveData(int clientSocket)
