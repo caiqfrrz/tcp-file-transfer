@@ -39,6 +39,8 @@ This will produce:
 - `./out/server/` - the TCP server
 - `./out/client/` - the client
 
+Run the server:
+
 ```bash
 ./out/server
 ```
