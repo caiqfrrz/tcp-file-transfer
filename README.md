@@ -74,6 +74,19 @@ quit                      -> disconnect from server
 
 ---
 
+## Protocol
+This app uses a **simple line-based protocol** over TCP.
+
+- Messages sent to clients always start with a special tag:
+  - `MSG ` indicates a text message.
+  - `FILE_START` announces a file transfer with metadata:  
+    `FILE_START <filename> <filesize> <sha256>\n`
+  - `FILE_END` signals the end of a file transfer.
+
+- Clients wait for these markers to coordinate downloads, print messages, or handle server responses.
+
+---
+
 ## SHA256 integrity
 When downloading a file, the client computes a local SHA256 hash and compares it with the one sent by the server to ensure the file was transferred correctly.
 
