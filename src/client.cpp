@@ -1,10 +1,15 @@
 #include "client.h"
 
-Client::Client()
+Client::Client(const char *serverIp)
 {
     serverAddress.sin_family = AF_INET;
     serverAddress.sin_port = htons(serverPort);
-    serverAddress.sin_addr.s_addr = INADDR_ANY;
+
+    if (inet_pton(AF_INET, serverIp, &serverAddress.sin_addr) <= 0)
+    {
+        std::cerr << "Invalid address / Address not supported" << std::endl;
+        return;
+    }
 
     if (!createSocket() || !connectServer())
         return;
@@ -40,17 +45,6 @@ bool Client::connectServer()
     return true;
 }
 
-void Client::displayServerMenu()
-{
-    char buffer[1024];
-    int bytes = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
-    if (bytes > 0)
-    {
-        buffer[bytes] = '\0';
-        std::cout << buffer << std::endl;
-    }
-}
-
 void Client::listenServer()
 {
     while (true)
@@ -58,16 +52,13 @@ void Client::listenServer()
         std::string line = receiveLine();
         if (line.empty())
         {
-            std::cerr << "Disconnected from server." << std::endl;
+            printTerminal("Disconnected from server.", true);
             break;
         }
 
         if (line.rfind("MSG", 0) == 0)
         {
-            std::cout << "\r";
-            std::cout << "                                         \r";
-            std::cout << line.substr(4) << std::endl;
-            std::cout << "Enter command (h for help): " << std::flush;
+            printTerminal(line.substr(4));
         }
         else if (line.rfind("FILE_START", 0) == 0)
         {
@@ -94,7 +85,6 @@ std::string Client::receiveLine()
 
 void Client::handleInteraction()
 {
-    displayServerMenu();
     std::thread([this]()
                 { this->listenServer(); })
         .detach();
@@ -102,12 +92,12 @@ void Client::handleInteraction()
     while (true)
     {
         std::string input;
-        std::cout << "Enter command (h for help): ";
+        std::cout << "Enter command: ";
         std::getline(std::cin, input);
 
         if (send(clientSocket, input.c_str(), input.size(), 0) <= 0)
         {
-            std::cerr << "Failed to send command" << std::endl;
+            printTerminal("Failed to send command", true);
             break;
         }
 
@@ -123,42 +113,89 @@ void Client::handleInteraction()
 
 void Client::handleFileDownload(std::string fileInfo)
 {
-    // protocol: FILE_START filename size
+    // protocol: FILE_START filename size hash
     std::istringstream iss(fileInfo);
-    std::string tag, filename;
+    std::string tag, filename, fileHash;
     int filesize;
-    iss >> tag >> filename >> filesize;
+    iss >> tag >> filename >> filesize >> fileHash;
 
     std::ofstream file("downloaded_" + filename, std::ios::binary);
     if (!file)
     {
-        std::cerr << "Could not create file." << std::endl;
+        printTerminal("Could not create file.", true);
         return;
     }
 
     int remaining = filesize;
     char buffer[4096];
+    int downloaded = 0;
     while (remaining > 0)
     {
         int chunk = recv(clientSocket, buffer, std::min((int)sizeof(buffer), remaining), 0);
         if (chunk <= 0)
         {
-            std::cerr << "Connection lost during file transfer." << std::endl;
+
+            printTerminal("Connection lost during file transfer.", true);
             break;
         }
         file.write(buffer, chunk);
+        downloaded += chunk;
         remaining -= chunk;
+
+        int width = 50;
+        float percent = (float)downloaded / filesize;
+        int pos = width * percent;
+
+        std::cout << "\r[";
+        for (int i = 0; i < width; ++i)
+        {
+            if (i < pos)
+                std::cout << "=";
+            else if (i == pos)
+                std::cout << ">";
+            else
+                std::cout << " ";
+        }
+        std::cout << "] " << int(percent * 100) << "%";
+        std::cout.flush();
     }
 
     file.close();
+
     // read FILE_END
     receiveLine();
 
-    std::cout << "File " << filename << " downloaded!" << std::endl;
+    std::string localHash = sha256("downloaded_" + filename);
+    printTerminal("File " + filename + " downloaded!");
+    if (localHash == fileHash)
+    {
+        printTerminal("Integrity check OK: SHA256 matches.");
+    }
+    else
+    {
+        printTerminal("WARNING: SHA256 mismatch! File may be corrupted.", true);
+    }
 }
 
-int main()
+void Client::printTerminal(std::string str, bool err)
 {
-    Client c;
+    std::cout << "\r" << std::string(80, ' ') << "\r";
+    if (!err)
+        std::cout << str << std::endl;
+    else
+        std::cerr << str << std::endl;
+
+    std::cout << "Enter command: " << std::flush;
+}
+
+int main(int argc, char *argv[])
+{
+    if (argc != 2)
+    {
+        std::cerr << "Usage: " << argv[0] << " <server_ip>" << std::endl;
+        return 1;
+    }
+
+    Client c(argv[1]);
     return 0;
 }

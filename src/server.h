@@ -9,7 +9,8 @@
 #include <vector>
 #include <mutex>
 #include <bits/stdc++.h>
-#include <openssl/sha.h>
+#include <filesystem>
+#include "sha256sum.h"
 
 struct ClientInfo
 {
@@ -45,5 +46,6 @@ public:
     void sendMenu(int clientSocket);
     bool sendFile(std::string fileName, int clientSocket);
     void broadcastMessage(const std::string &message, int senderSocket);
+    void printTerminal(std::string str, bool err = false);
     ClientInfo acceptClientConnection();
 };

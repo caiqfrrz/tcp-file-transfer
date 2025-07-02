@@ -6,25 +6,27 @@ enum req_type
     message,
     quit,
     help,
+    list,
     null
 };
 
 req_type getRequestType(const std::string &input)
 {
-    size_t space_pos = input.find(' ');
-    if (space_pos != std::string::npos)
-    {
-        std::string req = input.substr(0, space_pos);
+    std::istringstream iss(input);
+    std::string req;
+    iss >> req;
 
-        if (req == "file")
-            return file;
-        if (req == "message")
-            return message;
-        if (req == "q" || req == "quit")
-            return quit;
-        if (req == "h" || req == "help")
-            return help;
-    }
+    if (req == "file")
+        return file;
+    if (req == "message")
+        return message;
+    if (req == "list")
+        return list;
+    if (req == "q" || req == "quit")
+        return quit;
+    if (req == "h" || req == "help")
+        return help;
+
     return null;
 }
 
@@ -38,6 +40,29 @@ Server::Server() : running(true)
     {
         return;
     }
+
+    std::thread([this]()
+                {
+        while (running)
+        {
+            std::cout << "Send a message (quit to stop server): ";
+            std::string input;
+            std::getline(std::cin, input);
+            if (input == "quit" || input == "exit")
+            {
+                std::cout << "Stopping server..." << std::endl;
+                stop();
+                break;
+            }
+            else if (!input.empty())
+            {
+                std::string message = "MSG SERVER says: " + input + "\n";
+                broadcastMessage(message, -1);
+                std::cout << message.substr(4);
+            }
+        } })
+        .detach();
+
     while (running)
     {
 
@@ -129,7 +154,7 @@ ClientInfo Server::acceptClientConnection()
         std::cerr << "Accept failed: " << std::endl;
         return ClientInfo{-1, sockaddr_in{}};
     }
-    std::cout << "Accepted a connection from client" << std::endl;
+    printTerminal("Accepted a connection from client " + std::string(inet_ntoa(clientAddr.sin_addr)));
 
     {
         std::lock_guard<std::mutex> lock(lockVector);
@@ -139,16 +164,26 @@ ClientInfo Server::acceptClientConnection()
     return ClientInfo{clientSocket, clientAddr};
 }
 
+void Server::printTerminal(std::string str, bool err)
+{
+    std::cout << "\r" << std::string(80, ' ') << "\r";
+    if (!err)
+        std::cout << str << std::endl;
+    else
+        std::cerr << str << std::endl;
+}
+
 void Server::sendMenu(int clientSocket)
 {
     const std::string menu =
-        R"(
-file <file-name>          -> download a file
-message <message-data>    -> send a message
-list                      -> list the files in the server
-help                      -> this screen
-q or quit                 -> quit
-)";
+        "MSG \n"
+        "MSG file <file-name>          -> download a file\n"
+        "MSG message <message-data>    -> send a message to all users\n"
+        "MSG list                      -> list the files in the server\n"
+        "MSG help                      -> this screen\n"
+        "MSG q or quit                 -> quit\n"
+        "MSG \n";
+
     send(clientSocket, menu.c_str(), menu.size(), 0);
 }
 
@@ -162,7 +197,7 @@ void Server::handleInput(int clientSocket, sockaddr_in clientAddr)
             std::string req = receiveData(clientSocket);
             if (req.empty())
             {
-                std::cerr << "Connection closed by client.\n";
+                printTerminal("Connection closed by client " + std::string(inet_ntoa(clientAddr.sin_addr)));
                 break;
             }
 
@@ -184,13 +219,26 @@ void Server::handleInput(int clientSocket, sockaddr_in clientAddr)
 
                 std::string messageComplete = "MSG " + clientIp + " says: " + messageStr + "\n";
 
-                std::cout << "broadcasting " + messageComplete << std::endl;
+                printTerminal(messageComplete.substr(4));
 
                 broadcastMessage(messageComplete, clientSocket);
                 break;
             }
-            case quit:
+            case list:
+            {
+                for (const auto &entry : std::filesystem::directory_iterator("."))
+                {
+                    if (std::filesystem::is_regular_file(entry))
+                    {
+                        std::string line = "MSG - " + entry.path().filename().string() + "\n";
+                        send(clientSocket, line.c_str(), line.size(), 0);
+                    }
+                }
                 break;
+            }
+            break;
+            case quit:
+                return;
             case help:
                 sendMenu(clientSocket);
                 break;
@@ -216,15 +264,17 @@ bool Server::sendFile(std::string fileName, int clientSocket)
         return false;
     }
 
-    // CORREÇÃO AQUI
     file.seekg(0, std::ios::end);
     std::streamsize filesize = file.tellg();
     file.seekg(0, std::ios::beg);
 
-    std::string header = "FILE_START " + fileName + " " + std::to_string(filesize) + "\n";
+    std::string fileHash = sha256(fileName);
+
+    // example: FILE_START teste.txt 13 05da8b41f3f8537fa09b202680136f9bc0a06f8841b661ae0a9ca26ef72e62a3\n
+    std::string header = "FILE_START " + fileName + " " + std::to_string(filesize) + " " + fileHash + "\n";
     send(clientSocket, header.c_str(), header.size(), 0);
 
-    std::cout << "Sending " << fileName << " (" << filesize << " bytes) to client." << std::endl;
+    printTerminal("Sending " + fileName + " (" + std::to_string(filesize) + " bytes) to client.");
 
     char buffer[4096];
     while (filesize > 0)
@@ -247,7 +297,7 @@ bool Server::sendFile(std::string fileName, int clientSocket)
     std::string endMarker = "FILE_END\n";
     send(clientSocket, endMarker.c_str(), endMarker.size(), 0);
 
-    std::cout << "File " << fileName << " successfully sent to client." << std::endl;
+    printTerminal("File " + fileName + " successfully sent to client.");
     return true;
 }
 
@@ -266,7 +316,7 @@ std::string Server::receiveData(int clientSocket)
     int bytesReceived = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
     if (bytesReceived <= 0)
     {
-        std::cerr << "Receive failed" << std::endl;
+        printTerminal("Receive failed", true);
         return "";
     }
 

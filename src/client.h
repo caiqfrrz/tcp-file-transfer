@@ -9,6 +9,7 @@
 #include <sstream>
 #include <atomic>
 #include <openssl/sha.h>
+#include "sha256sum.h"
 
 class Client
 {
@@ -19,13 +20,13 @@ private:
     std::atomic<bool> running{true};
 
 public:
-    Client();
+    Client(const char *serverIp);
     ~Client();
-    void displayServerMenu();
     void handleFileDownload(std::string fileInfo);
     std::string receiveLine();
     bool createSocket();
     bool connectServer();
     void handleInteraction();
     void listenServer();
+    void printTerminal(std::string str, bool err = false);
 };
